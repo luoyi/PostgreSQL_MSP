@@ -1,0 +1,84 @@
+%\usetheme{Rochester}
+
+\RequirePackage{pgf}
+\RequirePackage{tikz}
+\usetikzlibrary{positioning}
+\usetikzlibrary{decorations.fractals}
+
+
+\usepackage{fontspec}
+\usepackage{xunicode}
+\usepackage{xltxtra}
+
+\usepackage[CJKchecksingle]{xeCJK}
+
+\setmainfont {Comic Sans MS}
+\setsansfont {Comic Sans MS}
+%\setCJKmainfont{Microsoft YaHei}
+%\setCJKsansfont{Microsoft YaHei}
+%\setCJKmonofont{Microsoft YaHei}
+\setCJKmainfont{Adobe Song Std}
+\setCJKsansfont{Adobe Heiti Std}
+\setCJKmonofont{Adobe Heiti Std}
+\punctstyle{quanjiao}
+
+
+\setbeamerfont*{june}{size=\normalsize,series=\normalfont,family=\sffamily}
+\setbeamerfont*{title}{size=\Large,series=\bfseries,parent=june}
+\setbeamerfont*{subtitle}{size=\large,parent=june}
+\setbeamerfont*{author}{parent=june}
+\setbeamerfont*{institute}{parent=june}
+\setbeamerfont*{date}{parent=june}
+
+\newcommand{\TransEffect}{
+\special{pdf: put @thispage << /Trans <<
+/Type /Trans
+/D 1.5
+/S /Glitter
+/Dm /V
+/M /O
+>>
+>>
+}
+}
+
+\pgfdeclareimage[interpolate=true, width=0.15\paperwidth, height=0.1\paperheight]{qunar_header}{images/qunar_header}
+
+\newcounter{CurrentFrameMod}
+% looks like this can set the height of headline
+% \beamer@headheight=0.13\paperwidth
+
+\defbeamertemplate*{title page}{june theme}{
+	\leavevmode
+	\begin{tikzpicture}[remember picture, overlay]
+		\node [above=8ex of current page.center] 
+			{\usebeamerfont*{title}\inserttitle};
+		\node [above=4ex of current page.center] 
+			{\usebeamerfont*{subtitle}\insertsubtitle};
+
+		\node at (current page.center) 
+			{\usebeamerfont*{author} \insertauthor};
+		\node [below=2ex of current page.center] 
+			{\usebeamerfont*{date} \insertdate};
+	\end{tikzpicture}
+}
+
+\defbeamertemplate*{frametitle}{june theme}
+{
+  \vskip -8.0mm
+  \hskip 2.5cm \usebeamerfont*{frametitle}\textcolor{black}{\insertframetitle}
+  \hskip 0.5cm\usebeamerfont*{framesubtitle}\textcolor{black}{\insertframesubtitle}
+}
+\defbeamertemplate*{headline}{june theme}
+{
+    \tikz \node [minimum width=\paperwidth, minimum height=14mm, fill=blue!60] {};
+    \tikz \node [minimum width=\paperwidth, minimum height=1mm,  fill=blue!30] {};
+ 	\vskip -13mm \hskip 2em \pgfuseimage{qunar_header}
+}
+\setbeamersize{sidebar width left=5mm}
+\setbeamersize{sidebar width right=5mm}
+\setbeamersize{text margin left=0cm,text margin right=0cm}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{background canvas}[vertical shading][top=blue!50,bottom=blue!30]
+
+

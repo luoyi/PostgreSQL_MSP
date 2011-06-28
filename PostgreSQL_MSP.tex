@@ -1,0 +1,549 @@
+\documentclass[11pt, xetex, xcolor=x11names]{beamer}
+\usepackage{figlib}
+\usepackage{xcolor}
+\usepackage{listings}
+
+\usetheme{june}
+
+\title{PostgreSQL High Availability}
+\subtitle{Master-Slave(s)-PITR}
+\author{罗翼 @Qunar.com Search Team}
+\date{2011.06.26}
+\institute{Search Team}
+
+\newcommand{\keyword}[1] {{\tt\small\textcolor{blue}{#1}}}
+
+\begin{document}
+
+\plainframe{\titlepage}
+
+\begin{frame}
+  \frametitle{大纲}
+
+  \begin{itemize}
+  \item 基本概念
+  \item PostgreSQL 9.0 的 HA 结构概览
+  \item Stream-Replication 配置
+  \item PITR 配置
+  \item FAQ
+  \item That's Not All
+  \item Stream-Replication 未来
+  \end{itemize}
+\end{frame}
+
+\begin{frame}
+  \frametitle{基本概念}
+  \begin{itemize}
+  \item Master
+  \begin{itemize}
+  \item 主库，可读可写
+  \end{itemize}
+  \end{itemize}
+
+  \begin{itemize}
+  \item Slave
+  \begin{itemize}
+  \item 从库，不可写
+  \item 不可读模式 —— StandBy
+  \item 可读模式  ——   Stream Replication
+  \item trigger\_file 可让 Slave 变成 Master
+  \end{itemize}
+  \end{itemize}
+
+  \begin{itemize}
+  \item PITR
+  \begin{itemize}
+  \item Point-In-Time Recover
+  \item 通过 Base Backup 和 WAL 文件，将数据库恢复到 Base Backup 以后的任意时间点
+  \end{itemize}
+  \end{itemize}
+
+\end{frame}
+
+\begin{frame}
+  \frametitle{基本概念}
+  \begin{itemize}
+  \item WAL
+  \begin{itemize}
+  \item WAL = Write Ahead Log （MySQL BinLog ？）
+  \item PostgreSQL 在对真正的数据库做任何写操作之前，都会将相关的信息记录到 WAL 文件中
+  \item 仅仅根据 WAL 文件，即可 Replay PostgreSQL 的所有数据写操作 ——并且是带事务保护的
+  \item \textcolor{red}{必须}按照时序 Replay WAL 文件
+  \end{itemize}
+  \end{itemize}
+
+  \begin{itemize}
+  \item \keyword{archive\_command}
+  \begin{itemize}
+  \item  每生成一次完整的 WAL 文件，PostgreSQL 会调用 \keyword{archive\_command} ，用户可以配置%
+         该变量，定制化自己的 WAL 分发策略。
+  \end{itemize}
+  \end{itemize}
+
+  \begin{itemize}
+  \item \keyword{restore\_command}
+  \begin{itemize}
+  \item  以 Slave 模式启动时，PostgreSQL 会不停地调用 \keyword{restore\_command} 获取下一步所需要的
+         WAL 文件。
+  \end{itemize}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}
+  \frametitle{PostgreSQL 9.0 的 HA 结构概览}
+  \hskip -5mm \begin{tikzpicture} 
+    \matrix[row sep=0.3cm,column sep=1.2cm, ampersand replacement=\&] {
+	\& \node (sr) { Stream-Replication }; \&  
+	\\
+	\node (r1) { Write + Read }; \& \node (master) [master] {}; \& 
+	\\
+	\node (r2) { Read }; \&   \node (slave1) [slave] {};   \& 
+	\\
+	\node (r3) { Read }; \&   \node (slave2) [slave] {};   \& 
+	\\
+	\node (rn) { Read }; \&  \node (slaven) [slave] {};   \& 
+	\\
+    };
+    \node at (master) {Master}; 
+    \node at (slave1) {Slave1}; 
+    \node at (slave2) {Slave2}; 
+    \node at (slaven) {SlaveN}; 
+
+	 
+	\draw [tip] (r1.east) -- (master.north);
+	\draw [tip] (r2.east) -- (slave1.north);
+	\draw [tip] (r3.east) -- (slave2.north);
+	\draw [tip] (rn.east) -- (slaven.north);
+	\node (wallog) [xshift = 2.3cm, yshift=0.4cm] at (master.south) {WAL Log};
+	\draw [bluetip] (master.south) -| +(2.0cm, -2cm) |- ( slave1.south);
+	\draw [bluetip] (master.south) -| +(2.0cm, -2cm) |- ( slave2.south);
+	\draw [bluetip] (master.south) -| +(2.0cm, -2cm) |- ( slaven.south);
+	\node (pdata) [slave, yshift=-4.0cm, xshift=0cm, minimum width = 25mm ] at (slave2.south) {};
+	\node (pxlog) [slave, yshift=-4.0cm, xshift=0cm, minimum width = 25mm ] at (slave1.south) {};
+	\node at (pxlog) {XLog Archive};
+	\node at (pdata) {Hot Backup};
+	\draw [bluetip] (master.south) -| (pxlog.east);
+	\draw [bluetip] (slaven.west) -- +(0, -8.0mm) -| (pdata.west);
+	\node (pitr) [xshift=4.8cm] at (sr) {PITR Backup};
+	\node [yshift=-5.4cm, xshift=-0.8cm] at (wallog) {Base Backup};
+\end{tikzpicture} 
+
+\end{frame}
+
+\begin{frame}
+  \frametitle{PostgreSQL 9.0 的 HA 结构概览}
+  \begin{itemize}
+  \item 所有的写请求，被发送到 Master
+  \item 所有的读请求，被均衡到 Master + 各个 Slave
+  \item 收集 Master 产生的所有 WAL 文件，做为 PITR 的 XLog 恢复数据
+  \item 定期对 Slave 做 Base Backup，便于快速恢复到需要的时间点
+  \end{itemize}
+
+\end{frame}
+
+
+\defverbatim[colored]\testcode{%
+\begin{lstlisting}[frame=single,backgroundcolor=\color{yellow}]
+host replication all 192.168.128.124/32 trust
+\end{lstlisting}}%
+
+\begin{frame}
+  \frametitle{Stream-Replication 配置}
+  \framesubtitle{Master}
+  \begin{itemize}
+  \item \keyword{pg\_hba.conf} 认证配置
+  \begin{itemize}
+  	\item Stream-Replication 使用名为 \keyword{replication} 的特殊用户
+  	\item 该用户对所有数据库有 \keyword{trust} 权限
+  	\item 主要根据 IP 来限制该用户的访问
+  \end{itemize}
+  \end{itemize}
+  \tikz \node [writer] 
+           { host \hskip 1em replication \hskip 1em all \hskip 1em 192.168.128.124/32 \hskip 1em trust };
+\end{frame}
+\begin{frame}
+  \frametitle{Stream-Replication 配置}
+  \framesubtitle{Master}
+  \begin{itemize}
+  \item \keyword{postgresql.conf} 配置
+  \begin{itemize}
+  	\item 确保监听在 client 能访问的 IP 地址而不是 Unix Socket 上
+  	\vskip 2mm \tikz \node [writer] 
+           { listen\_addresses = '*' };
+	\vskip 2mm
+  	\item 设定 wal\_level
+  	\vskip 2mm \tikz \node [writer] 
+           { wal\_level = hot\_standby };
+
+	\vskip 2mm
+  	\item 设定 max\_wal\_senders，限定 slave 连接的上限
+  	\vskip 2mm \tikz \node [writer] 
+           { max\_wal\_senders = 2 };
+	\vskip 2mm
+  	\item 打开 archive\_mode
+  	\vskip 2mm \tikz \node [writer] 
+           { archive\_mode = on };
+  \end{itemize}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}
+  \frametitle{Stream-Replication 配置}
+  \framesubtitle{Master}
+  \begin{itemize}
+  \item \keyword{archive\_command} 配置
+  \end{itemize}
+  \begin{tikzpicture}
+  \node (a) [writer, align=left] 
+           { archive\_command = \\
+		   /usr/bin/omnipitr-archive \\ 
+		   -l /omnipitr/omnipitr.log \\ 
+		   -s /omnipitr \\ 
+		   -dr gzip=rsync://r\_ip/master\_PITR/ \\ 
+		   -dl gzip=/l\_dir/master\_PITR \\ 
+		   -db /omnipitr/dstbackup \\ 
+		   --pid-file /omnipitr/omnipitr.pid  \\ 
+		   -v "\%p" };
+  \node [comment, yshift=1.4cm] at (a.east)  { \# 用 omnipitr-archive 做 WAL 分发 };
+  \node [comment, yshift=10mm] at (a.east)  { \# omnipitr-archive 的 LOG 文件路径 };
+  \node [comment, yshift=5mm] at (a.east)  { \# omnipitr-archive 的 STATE 目录 };
+  \node [comment, yshift=0mm] at (a.east)  { \# 用 rsync 将 WAL 文件同步到 slave 机器 };
+  \node [comment, yshift=-5mm] at (a.east)  { \# 本地的 WAL 文件目录 };
+  \node [comment, yshift=-10mm] at (a.east)  { \# 暂时不知道用途  };
+  \node [comment, yshift=-14mm] at (a.east)  { \# pid 文件，防止多个实例  };
+  \node [comment, yshift=-19mm] at (a.east)  { \# 啰嗦的 LOG  };
+  \end{tikzpicture}
+  \begin{itemize}
+  \item \keyword{omnipitr-archive} 的文档
+  \end{itemize}
+  \vskip 2mm \tikz \node [writer] 
+		{ perldoc /usr/share/doc/omnipitr/omnipitr-archive.pod };
+\end{frame}
+
+\begin{frame}
+  \frametitle{Stream-Replication 配置}
+  \framesubtitle{Slave}
+  \begin{itemize}
+  \item \keyword{pg\_hba.conf} 无特殊配置
+  \item \keyword{postgresql.conf} 无特殊配置，但~ ……
+  \begin{itemize}
+  	\item 将 \keyword{archive\_mode} 设为 off ，防止 XLog 文件互相污染
+  \end{itemize}
+  \item \keyword{recovery.conf} 配置
+  \begin{itemize}
+  	\item PostgreSQL 启动时，如果 \keyword{\$PGDATA} 目录下有 \keyword{recovery.conf} 文%
+	件 ，则自动进入 slave 模式
+  	\item 默认的 slave 模式是 \keyword{StandBy} 模式，不能响应 ReadOnly 的查询
+  	\item 如果 \keyword{recovery.conf} 中有 \keyword{primary\_conninfo}，则进%
+	入 Stream-Replication，能响应 ReadOnly 的查询
+  	\item 在 Stream-Replication 模式下，slave 会从 \keyword{walrecv} 进程%
+           和 \keyword{restore\_command} 分别读入需要的 WAL 文件
+  \end{itemize}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}
+  \frametitle{Stream-Replication 配置}
+  \framesubtitle{Slave}
+  \begin{itemize}
+  \item \keyword{recovery.conf} 配置
+  \begin{itemize}
+  \item \keyword{standby\_mode}
+  \vskip 2mm \tikz \node [writer] 
+		{ standby\_mode = 'on' };
+  \item \keyword{trigger\_file}：将 Slave 变成 Master
+  \vskip 2mm \tikz \node [writer] 
+		{ trigger\_file = '/export/pgdata/slave.trigger' };
+  \item \keyword{primary\_conninfo}
+  \vskip 2mm \tikz \node [writer, align=left] 
+		{ primary\_conninfo = \\ 'host=192.168.12.104 port=5432 \\user=abc password=xyz' };
+  \end{itemize}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}
+  \frametitle{Stream-Replication 配置}
+  \framesubtitle{Slave}
+  \begin{itemize}
+  \item \keyword{restore\_command} 配置
+  \end{itemize}
+  \begin{tikzpicture}
+  \node (a) [writer, align=left] 
+           { restore\_command = \\
+		     /usr/bin/omnipitr-restore \\
+            -l /omnipitr/omnipitr.log \\
+            -s gzip=/l\_dir/PITR\_FILES/ \\
+            -f /p\_dir/slave.trigger \\
+            -r  \\
+            -p /var/run/omnipitr/removal.stop  \\
+            -sr \\
+             -v %f %p 
+		    };
+  \node [comment, yshift=1.4cm] at (a.east)  { \# 用 omnipitr-restore 做 WAL 恢复 };
+  \node [comment, yshift=10mm] at (a.east)  { \# omnipitr-archive 的 LOG 文件路径 };
+  \node [comment, yshift=5mm] at (a.east)  { \# 本地 WAL 文件目录 };
+  \node [comment, yshift=0mm] at (a.east)  { \#  slave 的 trigger\_file };
+  \node [comment, yshift=-5mm] at (a.east)  { \# 移除不必要的 WAL 文件 (remove) };
+  \node [comment, yshift=-10mm] at (a.east)  { \# 如果存在，将不会继续删除 WAL 文件  };
+  \node [comment, yshift=-14mm] at (a.east)  { \# Stream-Replication 标志  };
+  \node [comment, yshift=-19mm] at (a.east)  { \# 啰嗦的 LOG  };
+  \end{tikzpicture}
+  \begin{itemize}
+  \item \keyword{omnipitr-restore} 的文档
+  \end{itemize}
+  \vskip 2mm \tikz \node [writer] 
+		{ perldoc /usr/share/doc/omnipitr/omnipitr-restore.pod };
+\end{frame}
+
+\begin{frame}
+  \frametitle{Stream-Replication 配置}
+  \framesubtitle{LOG \& CHECK}
+  \begin{itemize}
+  \item  Master 上的 \keyword{wal sender}
+  \end{itemize}
+  \vskip 2mm \tikz \node [writer, align=left] 
+		{ ps axuww |grep postgres |grep sender \\ postgres: wal sender process ... streaming 1A/EA0370D0 };
+  \begin{itemize}
+  \item  Slave 上的 \keyword{wal receiver}
+  \end{itemize}
+  \vskip 2mm \tikz \node [writer, align=left] 
+		{ ps axuww |grep postgres |grep receiver \\ postgres: wal receiver process   streaming 1A/E909E788 };
+\end{frame}
+
+\begin{frame}
+  \frametitle{Stream-Replication 配置}
+  \framesubtitle{LOG \& CHECK}
+  \begin{itemize}
+  \item  Master 上的 \keyword{omnipitr-archive} LOG
+  \end{itemize}
+  \vskip 2mm \hskip -2mm \tikz \node [writer, align=left, font=\tt\scriptsize] 
+		{ tail -f /var/log/omnipitr.log \\
+   		  omnipitr-archive : LOG : Timer [Compressing with gzip] took: 0.706s \\
+		  omnipitr-archive : LOG : Timer [Sending x.gz to rsync://r\_ip/xx.gz] took: 0.128s \\
+		  omnipitr-archive : LOG : Segment xxx successfully sent to all destinations.
+		  };
+  \begin{itemize}
+  \item  Slave 上的 \keyword{omnipitr-restore} LOG
+  \end{itemize}
+  \vskip 2mm \hskip -2mm \tikz \node [writer, align=left, font=\tt\scriptsize] 
+		{ tail -f /var/log/omnipitr.log \\
+		omnipitr-restore : LOG : Called with parameters: xxx \\ 
+		omnipitr-restore : FATAL : Requested file does not exist, and it is streaming \\
+		\hskip 15em replication environment. Dying.
+		  };
+\end{frame}
+
+\begin{frame}
+  \frametitle{Stream-Replication 配置}
+  \framesubtitle{LOG \& CHECK}
+  \begin{itemize}
+  \item  Slave 上的 \keyword{pg\_log} 启动 LOG
+  \end{itemize}
+  \vskip 2mm \hskip -2mm \tikz \node [writer, align=left, font=\tt\scriptsize] 
+		{ 
+		tail -f /export/pgdata/pg\_log/pgrun\_xxx.log \\
+		LOG:  entering standby mode \\
+		LOG:  redo starts at 10/C7070CD0 \\
+		LOG:  consistent recovery state reached at 10/CE039210 \\
+		LOG:  database system is ready to accept read only connections \\
+		LOG:  invalid record length at 10/D1019198 \\
+		LOG:  streaming replication successfully connected to primary
+		  };
+\end{frame}
+
+\begin{frame}
+  \frametitle{PITR 配置}
+  \framesubtitle{选择}
+  \begin{itemize}
+  \item  PITR = Base Backup + WAL
+  \item  Master 的 WAL 文件已经全部收集了
+  \item  在 Master 上做 Base Backup 
+  \begin{itemize}
+  	\item \textcolor{red}{ 读取 \keyword{\$PGDATA} 中所有的文件，会击溃 OS 的 FS Cache}
+  	\item \textcolor{red}{ TAR + GZIP 消耗大量的 CPU 资源 }
+  	\item \textcolor{red}{ 稳定，权限，性能~ ——~ 谁愿意给 Master 再多加一个任务呢？ }
+  \end{itemize}
+  \item  在 Slave 上做 Base Backup 
+  \begin{itemize}
+  	\item \textcolor{red}{ 仍然需要到 Master 执行 \keyword{pg\_start\_backup} }
+  	\item \textcolor{red}{ 需要等待主库的 CHECKPOINT，会消耗更多时间 }
+  \end{itemize}
+  \item  当然还是选择 Slave ！
+  \end{itemize}
+\end{frame}
+
+\begin{frame}
+  \frametitle{PITR 配置}
+  \framesubtitle{备份}
+  \begin{itemize}
+  \item 在 Slave 机器上运行 \keyword{omnipitr-back-slave}
+  \end{itemize}
+  \begin{tikzpicture}
+  \node (a) [writer, align=left] 
+           {/usr/bin/omnipitr-backup-slave \\
+		    -D /export/pgdata \\
+			-h master.db.qunar.com \\
+			-U abc -d testdb -P 5432 \\
+			-s gzip=/l\_dir/PITR\_FILES/  \\ 
+			-dl gzip=/l\_dir/hot\_backup \\
+			-l /omnipitr/omnipitr.log \\
+			--pid-file /omnipitr/omnipitr-bs.pid \\
+			-p /omnipitr/removal.stop \\
+			-cm \\
+			-v \\
+			--psql-path /opt/pg90/bin/psql \\
+			--tar-path /opt/tar/bin/tar \\
+			-nn
+		    };
+  \node [comment, yshift=3.1cm] at (a.east)  { \# 用 o-b-s 做 Base Backup};
+  \node [comment, yshift=2.6cm] at (a.east)  { \# \$PGDATA 目录};
+  \node [comment, yshift=2.1cm] at (a.east)  { \# Master 地址};
+  \node [comment, yshift=1.6cm] at (a.east)  { \# Master 连接信息};
+  \node [comment, yshift=1.2cm] at (a.east)  { \# Master WAL 目录};
+  \node [comment, yshift=0.7cm] at (a.east)  { \# 生成的 Base Backup 文件存放目录};
+  \node [comment, yshift=0.2cm] at (a.east)  { \# 运行 LOG 目录};
+  \node [comment, yshift=-0.3cm] at (a.east)  { \# pid 文件，防止多实例同时运行};
+  \node [comment, yshift=-0.8cm] at (a.east)  { \# 停止删除旧的 WAL 文件的标志文件 };
+  \node [comment, yshift=-1.2cm] at (a.east)  { \# CALL MASTER pg\_start\_backup};
+  \node [comment, yshift=-1.7cm] at (a.east)  { \# 啰嗦 LOG};
+  \node [comment, yshift=-2.2cm] at (a.east)  { \# PSQL 可执行文件的路径};
+  \node [comment, yshift=-2.7cm] at (a.east)  { \# >1.30 版本的 GNU TAR};
+  \node [comment, yshift=-3.1cm] at (a.east)  { \# 不掉用 nice 改变运行优先级};
+  \end{tikzpicture}
+\end{frame}
+
+\begin{frame}
+  \frametitle{PITR 配置}
+  \framesubtitle{恢复}
+  \begin{itemize}
+  \item 解压缩 \keyword{data} 和 \keyword{xlog} 文件
+  \end{itemize}
+  \vskip 2mm \tikz \node [writer, align=left] 
+		{ ls -alh *.tag.gz \\
+		xxx 1.1G Jun 25 22:53 masterdb-data-2011-06-25.tar.gz \\
+		xxx 307M Jun 25 22:55 masterdb-xlog-2011-06-25.tar.gz
+		  };
+  \begin{itemize}
+  \vskip 2mm
+  \item 将当前收集到的所有的 WAL 文件放入 \keyword{pg\_xlog} 文件夹
+  \vskip 2mm
+  \item 调用 \keyword {pg\_ctl} 启动数据库
+  \begin{itemize}
+  	\item 如果有 \keyword {recovery.conf} 文件存在，则自动进入 slave 模式
+  \end{itemize}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}
+  \frametitle{PITR 配置}
+  \framesubtitle{LOG \& CHECK}
+  \begin{itemize}
+  \item  \keyword{omnipitr-back-slave} 的 LOG
+  \end{itemize}
+  \vskip 2mm \hskip -2mm \tikz \node [writer, align=left, font=\tt\scriptsize] 
+		{ 
+		tail -f /var/log/omnipitr/omnipitr.log \\
+LOG : Timer [SELECT pg\_start\_backup('xxx')] took: 27.316s \\
+LOG : pg\_start\_backup('omnipitr') returned 10/E1000020. \\
+LOG : Timer [select pg\_read\_file( 'backup\_label', 0, ( \\
+      \hskip 3em pg\_stat\_file( 'backup\_label' ) ).size )] took: 0.012s \\
+2011-06-25 22:45:50.572652 LOG : \textcolor{red}{Waiting for checkpoint} (based \\
+       \hskip 3em on backup\_label from master) - CHECKPOINT LOCATION: 10/E1070BE8 \\
+2011-06-25 22:50:45.932004 LOG : Checkpoint . \\
+LOG : Starting "gzip" writer to /l\_dir/masterdb-data-2011-06-25.tar.gz \\
+LOG : Timer [Compressing \$PGDATA] took: 190.923s \\
+LOG : Timer [SELECT pg\_stop\_backup()] took: 3.015s \\
+LOG : pg\_stop\_backup() returned 10/E9081CB0. \\
+LOG : Timer [Making data archive] took: 516.659s 
+		  };
+  \begin{itemize}
+  \item 请注意 Waiting for checkpoint 的时间长度
+  \end{itemize}
+\end{frame}
+
+\begin{frame}
+  \frametitle{PITR 配置}
+  \framesubtitle{计划}
+  \begin{itemize}
+  \item Base Backup 和恢复时间之间，如果有巨量的 WAL 文件，会导致 recover 过程很慢 (小时级别)
+  \item 所以需要定期的 Base Backup
+  \item 制定 Base Backup 的时间表以后，定期删除过期的 WAL 文件
+  \end{itemize}
+\end{frame}
+
+\begin{frame}
+  \frametitle{FAQ}
+  \begin{itemize}
+  \item 过程中出现莫名其妙的错误
+  \begin{itemize}
+  \item 检查牵涉的所有目录是否都是 \keyword{postgres} 用户的 owner，并且权限 mask = 0600
+  \end{itemize}
+  \end{itemize}
+
+  \begin{itemize}
+  \item 修改了配置文件的参数，不起作用
+  \begin{itemize}
+  \item 用 \keyword{pg\_ctl} restart 数据库
+  \end{itemize}
+  \end{itemize}
+
+  \begin{itemize}
+  \item Master 的 WAL 文件无法传输到 Slave
+  \begin{itemize}
+  \item 确保从库的 \keyword{rsyncd.conf} 文件内容正确 —— 特别是权限！
+  \end{itemize}
+  \end{itemize}
+
+  \begin{itemize}
+  \item \keyword{omnipitr-back-slave} 跑了好长时间，没结束啊
+  \begin{itemize}
+  \item 确保 \keyword{omnipitr-back-slave} 和 \keyword{omnipitr-archive} 有共同的压缩方案（gzip,bzip2...）
+  \end{itemize}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}
+  \frametitle{FAQ}
+
+  \begin{itemize}
+  \item 参数都对，主从还是连不上
+  \begin{itemize}
+  \item 确保 Slave 的 \keyword{max\_connections} 参数的值大于等于主库的该参数的值
+  \end{itemize}
+  \end{itemize}
+
+  \begin{itemize}
+  \item 对 Slave 做 \keyword{pg\_dump} 总是失败，报个莫名其妙的错误
+  \end{itemize}
+
+  \vskip 2mm \tikz \node [writer, align=left] 
+		{ max\_standby\_archive\_delay = 1800s \\
+          max\_standby\_streaming\_delay = 1800s
+		  };
+\end{frame}
+
+
+\begin{frame}
+  \frametitle{That's Not All}
+  \begin{itemize}
+  \item 一个额外的 monitor-system 来确认 Master die 并且 trigger Slave
+  \begin{itemize}
+  \item 由于应用的场景各异，限制各不相同，无法做出通用的 FailOver System
+  \end{itemize}
+  \item 应用通过 VIP 或者 DNS 的方式，动态选择 Master 
+  \item Slave FailOver 以后，如何接入新的 Slave，以及新的 PITR 过程
+  \end{itemize}
+\end{frame}
+
+\begin{frame}
+  \frametitle{Stream-Replication 未来}
+  \framesubtitle{9.1 , 9.2}
+  \begin{itemize}
+  \item 同步事务 （可能并不如你想象中那么“同步”）
+  \item UNLOGGED TABLE （某些表并不需要同步）
+  \item 级联 WAL Sender ，减少 Master 的负载 
+  \item Slave 同步 Master 某段时间之前的数据（一个永远处于一周前的Slave）
+  \item \textcolor{red}{丢掉幻想。有些需求，是二进制模式同步永远无法解决的！bin-mode 和 trigger-mode 需要并存}
+  \end{itemize}
+\end{frame}
+\end{document}

@@ -1,0 +1,115 @@
+\usepackage{tikz}
+\usepackage{graphicx}
+\usepackage[xetex]{animate}
+
+\usetikzlibrary{%
+  shapes,%
+  arrows,%
+  shapes.misc,% wg. rounded rectangle
+  shapes.arrows,%
+  shapes,%
+  chains,%
+  matrix,%
+  positioning,% wg. " of "
+  scopes,%
+  decorations.pathmorphing,% /pgf/decoration/random steps | erste Graphik
+  decorations.shapes,%
+  shadows%
+}
+\tikzset{
+  input/.style={
+    circle, 
+    line width=1mm,
+    minimum height = 6mm,
+    draw=blue!50!black!50,  
+    top color=white,     
+    bottom color=blue!50!black!20,
+    inner sep=0pt,
+    font=\rm\small
+  },
+  front/.style={
+    rounded rectangle, 
+    line width=1mm,
+    minimum height = 10mm,
+    draw=purple!50!black!50,  
+    top color=white,
+    bottom color=purple!50!black!20,
+    inner sep=0pt,
+    font=\rm\tiny
+  },
+  normal/.style={
+    rectangle,
+    minimum height = 10mm,
+    minimum width = 1.4cm,
+    line width=1mm,
+    draw=green!50!black!50,   
+    top color=white,    
+    bottom color=green!50!black!20, 
+    inner sep=0pt,
+    font=\rm\tiny
+  },
+  callout/.style={
+      ellipse callout,
+    callout pointer arc=30,
+    callout absolute pointer={#1},
+    fill=red!50
+  },
+  db/.style={
+      cylinder,
+    rotate=90,
+    minimum height = 30mm,
+    minimum width = 15mm,
+    line width=1mm,
+    draw=blue!50!black!50,   
+    cylinder uses custom fill,
+    cylinder end fill=blue!25,
+    cylinder body fill=blue!25,
+    font=\rm\tiny
+  },
+  master/.style={
+    cylinder,
+    rotate=90,
+    minimum height = 10mm,
+    minimum width = 18mm,
+    line width=1mm,
+    draw=blue!50!black!50,   
+    cylinder uses custom fill,
+    cylinder end fill=blue!45,
+    cylinder body fill=blue!45,
+    font=\rm\tiny
+  },
+  slave/.style={
+    cylinder,
+    rotate=90,
+    minimum height = 10mm,
+    minimum width = 18mm,
+    line width=1mm,
+    draw=green!50!black!50,   
+    cylinder uses custom fill,
+    cylinder end fill=green!25,
+    cylinder body fill=green!25,
+    font=\rm\tiny
+  },
+  tip/.style={
+  ->,
+  black!70,
+  shorten >=0.5mm,
+  shorten <=0.5mm,
+  line width=0.5mm
+  },
+  bluetip/.style={
+  ->,
+  blue!70,
+  shorten >=0.5mm,
+  shorten <=0.5mm,
+  line width=0.5mm
+  },
+  writer/.style={
+  rounded corners, drop shadow, fill=yellow, draw, font=\tt\small
+  },
+  comment/.style={
+  font=\tt\tiny,
+  text=blue,
+  xshift=0.3cm, anchor=west
+  }
+}
